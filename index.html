@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="description" content="LifeOS: sistema operacional pessoal com missões, planejamento e gamificação.">
+  <title>LifeOS</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <noscript>O LifeOS precisa de JavaScript. Uma crueldade moderna, mas tecnicamente inevitável.</noscript>
+
+  <div id="app" class="app-shell" aria-live="polite">
+    <header class="topbar">
+      <button id="brandButton" class="brand" type="button" aria-label="Ir para Hoje">
+        <span class="brand-mark">LO</span>
+        <span>
+          <strong>LifeOS</strong>
+          <small id="modeLabel">Modo Aventura</small>
+        </span>
+      </button>
+
+      <div class="topbar-actions">
+        <div class="wallet" aria-label="Saldo de recursos">
+          <span title="Ouro">🪙 <b id="goldTop">0</b></span>
+          <span title="Cristais">💎 <b id="crystalsTop">0</b></span>
+        </div>
+        <button id="modeToggle" class="icon-button" type="button" aria-label="Alternar modo" title="Alternar Modo Aventura e Estratégico">🧭</button>
+      </div>
+    </header>
+
+    <main id="main" class="main-content"></main>
+
+    <nav class="bottom-nav" aria-label="Navegação principal">
+      <button data-nav="today" class="nav-item active" type="button"><span>⚔️</span><small>Hoje</small></button>
+      <button data-nav="capture" class="nav-item capture-nav" type="button"><span>＋</span><small>Capturar</small></button>
+      <button data-nav="missions" class="nav-item" type="button"><span>🗺️</span><small>Missões</small></button>
+      <button data-nav="character" class="nav-item" type="button"><span>👤</span><small>Personagem</small></button>
+      <button data-nav="more" class="nav-item" type="button"><span>☰</span><small>Mais</small></button>
+    </nav>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toastRoot" class="toast-root" aria-live="assertive"></div>
+  <div id="fxLayer" class="fx-layer" aria-hidden="true"></div>
+
+  <input id="importFile" type="file" accept="application/json,.json" hidden>
+  <script src="app.js" defer></script>
+</body>
+</html>
