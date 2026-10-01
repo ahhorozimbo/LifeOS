@@ -1,0 +1,911 @@
+name: Build Nego Doce APK
+
+on:
+  push:
+    branches:
+      - chatgpt-nego-doce-apk-v01
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Generate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p negodoce/app/src/main/java/com/ahhorozimbo/negodoce
+
+          cat > negodoce/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "NegoDoce"
+          include(":app")
+          EOF
+
+          cat > negodoce/build.gradle <<'EOF'
+          plugins {
+              id "com.android.application" version "8.7.3" apply false
+          }
+          EOF
+
+          cat > negodoce/app/build.gradle <<'EOF'
+          plugins {
+              id "com.android.application"
+          }
+
+          android {
+              namespace "com.ahhorozimbo.negodoce"
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId "com.ahhorozimbo.negodoce"
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 1
+                  versionName "0.1.0"
+              }
+
+              buildTypes {
+                  debug {
+                      debuggable true
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+
+          cat > negodoce/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Nego Doce"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar"
+                  android:usesCleartextTraffic="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:windowSoftInputMode="adjustResize">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="image/*" />
+                      </intent-filter>
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="text/plain" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > negodoce/app/src/main/java/com/ahhorozimbo/negodoce/MainActivity.java <<'EOF'
+          package com.ahhorozimbo.negodoce;
+
+          import android.app.Activity;
+          import android.content.ClipData;
+          import android.content.ClipboardManager;
+          import android.content.ContentResolver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.text.InputType;
+          import android.util.Base64;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.ArrayAdapter;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.ProgressBar;
+          import android.widget.ScrollView;
+          import android.widget.Spinner;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import org.json.JSONArray;
+          import org.json.JSONException;
+          import org.json.JSONObject;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.Locale;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          public class MainActivity extends Activity {
+
+              private static final int PICK_IMAGE = 1201;
+              private static final int BG = Color.rgb(14, 14, 16);
+              private static final int CARD = Color.rgb(28, 28, 32);
+              private static final int CARD_2 = Color.rgb(36, 36, 41);
+              private static final int TEXT = Color.rgb(246, 246, 248);
+              private static final int MUTED = Color.rgb(172, 172, 181);
+              private static final int ACCENT = Color.rgb(255, 78, 139);
+              private static final int ACCENT_2 = Color.rgb(255, 196, 91);
+
+              private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+              private EditText apiKeyInput;
+              private EditText contactInput;
+              private EditText contextInput;
+              private Spinner objectiveSpinner;
+              private Spinner modelSpinner;
+              private ImageView preview;
+              private TextView attachmentLabel;
+              private Button analyzeButton;
+              private Button clearImageButton;
+              private ProgressBar progress;
+              private LinearLayout resultsBox;
+
+              private Uri imageUri;
+              private android.content.SharedPreferences prefs;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().setStatusBarColor(BG);
+                  getWindow().setNavigationBarColor(BG);
+                  prefs = getSharedPreferences("nego_doce", MODE_PRIVATE);
+                  buildUi();
+                  handleIncomingIntent(getIntent());
+              }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  setIntent(intent);
+                  handleIncomingIntent(intent);
+              }
+
+              private void buildUi() {
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setFillViewport(true);
+                  scroll.setBackgroundColor(BG);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(dp(18), dp(18), dp(18), dp(36));
+                  scroll.addView(root, new ScrollView.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                  TextView title = text("🍬 Nego Doce", 30, TEXT, true);
+                  root.addView(title);
+
+                  TextView subtitle = text(
+                          "Copiloto de conversa. Mande print, story, foto ou texto; ele lê o clima e cria respostas no seu estilo.",
+                          14, MUTED, false);
+                  subtitle.setPadding(0, dp(4), 0, dp(18));
+                  root.addView(subtitle);
+
+                  root.addView(sectionTitle("CHAVE DA API"));
+                  apiKeyInput = input("sk-...  (não é salva)", 1);
+                  apiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                  root.addView(apiKeyInput);
+
+                  TextView keyNote = text(
+                          "A chave fica só na memória enquanto o app estiver aberto. ChatGPT Plus e API são cobranças separadas.",
+                          12, MUTED, false);
+                  keyNote.setPadding(dp(4), dp(4), dp(4), dp(14));
+                  root.addView(keyNote);
+
+                  modelSpinner = spinner(new String[]{"gpt-6-luna", "gpt-6-sol"});
+                  root.addView(modelSpinner);
+
+                  root.addView(space(12));
+                  root.addView(sectionTitle("CONVERSA"));
+
+                  contactInput = input("Nome ou apelido da pessoa", 1);
+                  contactInput.setText(prefs.getString("last_contact", ""));
+                  root.addView(contactInput);
+
+                  objectiveSpinner = spinner(new String[]{
+                          "Responder naturalmente",
+                          "Flertar",
+                          "Puxar assunto",
+                          "Provocar de leve",
+                          "Avançar",
+                          "Chamar pra sair",
+                          "Marcar encontro"
+                  });
+                  root.addView(objectiveSpinner);
+
+                  contextInput = input(
+                          "Contexto opcional: o que você quer fazer, algo que não aparece no print, ou cole as mensagens aqui.",
+                          4);
+                  root.addView(contextInput);
+
+                  LinearLayout attachRow = new LinearLayout(this);
+                  attachRow.setOrientation(LinearLayout.HORIZONTAL);
+                  attachRow.setGravity(Gravity.CENTER_VERTICAL);
+                  attachRow.setPadding(0, dp(6), 0, dp(8));
+
+                  Button attach = button("Anexar imagem");
+                  attach.setOnClickListener(v -> chooseImage());
+                  attachRow.addView(attach, new LinearLayout.LayoutParams(0, dp(48), 1f));
+
+                  clearImageButton = button("Remover");
+                  clearImageButton.setVisibility(View.GONE);
+                  clearImageButton.setOnClickListener(v -> clearImage());
+                  LinearLayout.LayoutParams clearLp = new LinearLayout.LayoutParams(dp(105), dp(48));
+                  clearLp.setMargins(dp(8), 0, 0, 0);
+                  attachRow.addView(clearImageButton, clearLp);
+
+                  root.addView(attachRow);
+
+                  attachmentLabel = text("Nenhuma imagem anexada", 12, MUTED, false);
+                  root.addView(attachmentLabel);
+
+                  preview = new ImageView(this);
+                  preview.setAdjustViewBounds(true);
+                  preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  preview.setVisibility(View.GONE);
+                  LinearLayout.LayoutParams prevLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(260));
+                  prevLp.setMargins(0, dp(8), 0, dp(10));
+                  root.addView(preview, prevLp);
+
+                  analyzeButton = button("ANALISAR E CRIAR RESPOSTAS");
+                  analyzeButton.setTextColor(Color.WHITE);
+                  analyzeButton.setBackground(rounded(ACCENT, 18));
+                  analyzeButton.setTypeface(Typeface.DEFAULT_BOLD);
+                  analyzeButton.setOnClickListener(v -> analyze());
+                  LinearLayout.LayoutParams analyzeLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+                  analyzeLp.setMargins(0, dp(10), 0, 0);
+                  root.addView(analyzeButton, analyzeLp);
+
+                  progress = new ProgressBar(this);
+                  progress.setVisibility(View.GONE);
+                  LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(dp(40), dp(40));
+                  progressLp.gravity = Gravity.CENTER_HORIZONTAL;
+                  progressLp.setMargins(0, dp(18), 0, dp(8));
+                  root.addView(progress, progressLp);
+
+                  resultsBox = new LinearLayout(this);
+                  resultsBox.setOrientation(LinearLayout.VERTICAL);
+                  LinearLayout.LayoutParams resultsLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT);
+                  resultsLp.setMargins(0, dp(18), 0, 0);
+                  root.addView(resultsBox, resultsLp);
+
+                  TextView privacy = text(
+                          "Privacidade: a imagem é enviada à API apenas para esta análise. O pedido usa store=false e o app não guarda a imagem.",
+                          11, MUTED, false);
+                  privacy.setPadding(dp(4), dp(24), dp(4), 0);
+                  root.addView(privacy);
+
+                  setContentView(scroll);
+              }
+
+              private void chooseImage() {
+                  Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                  intent.addCategory(Intent.CATEGORY_OPENABLE);
+                  intent.setType("image/*");
+                  startActivityForResult(intent, PICK_IMAGE);
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == PICK_IMAGE && resultCode == RESULT_OK && data != null && data.getData() != null) {
+                      setImage(data.getData(), "Imagem selecionada");
+                  }
+              }
+
+              private void handleIncomingIntent(Intent intent) {
+                  if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return;
+
+                  String type = intent.getType();
+                  if (type != null && type.startsWith("image/")) {
+                      Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                      if (uri != null) setImage(uri, "Imagem recebida pelo Compartilhar");
+                  } else if ("text/plain".equals(type)) {
+                      String shared = intent.getStringExtra(Intent.EXTRA_TEXT);
+                      if (shared != null && !shared.trim().isEmpty()) {
+                          contextInput.setText(shared);
+                          toast("Texto recebido");
+                      }
+                  }
+              }
+
+              private void setImage(Uri uri, String label) {
+                  imageUri = uri;
+                  preview.setImageURI(uri);
+                  preview.setVisibility(View.VISIBLE);
+                  clearImageButton.setVisibility(View.VISIBLE);
+                  attachmentLabel.setText(label);
+                  attachmentLabel.setTextColor(ACCENT_2);
+              }
+
+              private void clearImage() {
+                  imageUri = null;
+                  preview.setImageDrawable(null);
+                  preview.setVisibility(View.GONE);
+                  clearImageButton.setVisibility(View.GONE);
+                  attachmentLabel.setText("Nenhuma imagem anexada");
+                  attachmentLabel.setTextColor(MUTED);
+              }
+
+              private void analyze() {
+                  final String key = apiKeyInput.getText().toString().trim();
+                  final String contact = contactInput.getText().toString().trim();
+                  final String context = contextInput.getText().toString().trim();
+                  final String objective = String.valueOf(objectiveSpinner.getSelectedItem());
+                  final String model = String.valueOf(modelSpinner.getSelectedItem());
+
+                  if (key.isEmpty()) {
+                      toast("Cole sua chave da OpenAI API.");
+                      apiKeyInput.requestFocus();
+                      return;
+                  }
+                  if (contact.isEmpty()) {
+                      toast("Coloque um nome ou apelido para separar o contexto.");
+                      contactInput.requestFocus();
+                      return;
+                  }
+                  if (context.isEmpty() && imageUri == null) {
+                      toast("Cole uma mensagem ou anexe um print/story/foto.");
+                      return;
+                  }
+
+                  prefs.edit().putString("last_contact", contact).apply();
+                  setLoading(true);
+                  resultsBox.removeAllViews();
+
+                  executor.execute(() -> {
+                      try {
+                          JSONObject request = makeRequest(contact, context, objective, model);
+                          String responseBody = postToOpenAI(key, request);
+                          JSONObject parsed = parseApiResponse(responseBody);
+
+                          runOnUiThread(() -> {
+                              setLoading(false);
+                              renderResult(contact, parsed);
+                          });
+                      } catch (Exception e) {
+                          runOnUiThread(() -> {
+                              setLoading(false);
+                              renderError(e.getMessage() == null ? e.toString() : e.getMessage());
+                          });
+                      }
+                  });
+              }
+
+              private JSONObject makeRequest(String contact, String context, String objective, String model) throws Exception {
+                  String stateKey = "state_" + normalize(contact);
+                  String previous = prefs.getString(stateKey, "");
+                  String styleHints = prefs.getString("style_hints", "");
+
+                  String instructions =
+                          "Você é um copiloto de conversa e flerte entre adultos. " +
+                          "Seu trabalho é analisar a interação e criar respostas para o usuário escolher, nunca enviar por ele. " +
+                          "O estilo-base se chama Nego Doce: curto, natural, confiante, resenha, humor espontâneo, provocação leve, " +
+                          "sem cantada pronta, sem linguagem de coach, sem parecer carente, nerd, formal ou artificial. " +
+                          "Prefira português brasileiro informal, mensagens curtas e kkkk quando combinar. Evite emojis salvo se fizer sentido. " +
+                          "Primeiro avalie interesse demonstrado, reciprocidade, flerte, intimidade e estágio da interação. " +
+                          "Esses números são apenas estimativas do texto visível, nunca certezas sobre a pessoa. " +
+                          "Aproveite ganchos reais da imagem ou conversa. Não tente identificar pessoas em fotos. " +
+                          "Se a imagem for story ou foto, procure assunto natural além da aparência. Se não houver bom gancho, diga isso. " +
+                          "Não pressione, não manipule, não invente intimidade e respeite sinais de desinteresse ou limites. " +
+                          "Se houver indicação de menor de 18 anos, não gere conteúdo sexual ou de paquera adulta. " +
+                          "Retorne SOMENTE um objeto JSON válido, sem markdown e sem texto fora do JSON, exatamente com esta estrutura: " +
+                          "{\"analysis\":{\"interest\":0,\"reciprocity\":0,\"flirt\":0,\"intimacy\":0," +
+                          "\"stage\":\"\",\"reading\":\"\",\"recommended_move\":\"\",\"uncertainty\":\"\"}," +
+                          "\"avoid\":[\"\"],\"suggestions\":[{\"label\":\"Natural\",\"text\":\"\"}," +
+                          "{\"label\":\"Nego Doce\",\"text\":\"\"},{\"label\":\"Mais ousada\",\"text\":\"\"}]," +
+                          "\"state_summary\":\"\"}. " +
+                          "Use inteiros de 0 a 10. Produza exatamente 3 sugestões. A mais ousada ainda deve respeitar o nível real da conversa.";
+
+                  String userText =
+                          "Pessoa/contato: " + contact + "\n" +
+                          "Objetivo agora: " + objective + "\n" +
+                          "Contexto fornecido pelo usuário: " + (context.isEmpty() ? "(nenhum)" : context) + "\n" +
+                          "Estado anterior resumido: " + (previous.isEmpty() ? "(primeira análise)" : previous) + "\n" +
+                          "Preferências aprendidas: " + (styleHints.isEmpty() ? "(nenhuma adicional)" : styleHints) + "\n" +
+                          "Analise o material atual. Se houver imagem, leia também texto visível, situação e ganchos relevantes.";
+
+                  JSONArray content = new JSONArray();
+                  content.put(new JSONObject().put("type", "input_text").put("text", userText));
+
+                  if (imageUri != null) {
+                      String mime = getContentResolver().getType(imageUri);
+                      if (mime == null || !mime.startsWith("image/")) mime = "image/jpeg";
+                      byte[] bytes = readBytes(imageUri, 14 * 1024 * 1024);
+                      String dataUrl = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
+                      content.put(new JSONObject()
+                              .put("type", "input_image")
+                              .put("image_url", dataUrl)
+                              .put("detail", "high"));
+                  }
+
+                  JSONArray input = new JSONArray();
+                  input.put(new JSONObject().put("role", "user").put("content", content));
+
+                  JSONObject body = new JSONObject();
+                  body.put("model", model);
+                  body.put("instructions", instructions);
+                  body.put("input", input);
+                  body.put("store", false);
+                  body.put("max_output_tokens", 1200);
+                  return body;
+              }
+
+              private String postToOpenAI(String key, JSONObject body) throws Exception {
+                  URL url = new URL("https://api.openai.com/v1/responses");
+                  HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                  conn.setConnectTimeout(30000);
+                  conn.setReadTimeout(90000);
+                  conn.setRequestMethod("POST");
+                  conn.setDoOutput(true);
+                  conn.setRequestProperty("Authorization", "Bearer " + key);
+                  conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+
+                  byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+                  try (OutputStream os = conn.getOutputStream()) {
+                      os.write(payload);
+                  }
+
+                  int code = conn.getResponseCode();
+                  InputStream stream = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+                  String response = readStream(stream);
+
+                  if (code < 200 || code >= 300) {
+                      try {
+                          JSONObject err = new JSONObject(response);
+                          JSONObject detail = err.optJSONObject("error");
+                          String message = detail != null ? detail.optString("message", response) : response;
+                          throw new Exception("API " + code + ": " + message);
+                      } catch (JSONException ignored) {
+                          throw new Exception("API " + code + ": " + response);
+                      }
+                  }
+                  return response;
+              }
+
+              private JSONObject parseApiResponse(String responseBody) throws Exception {
+                  JSONObject root = new JSONObject(responseBody);
+                  JSONArray output = root.optJSONArray("output");
+                  if (output == null) throw new Exception("A API respondeu sem conteúdo.");
+
+                  String outputText = null;
+                  for (int i = 0; i < output.length() && outputText == null; i++) {
+                      JSONObject item = output.optJSONObject(i);
+                      if (item == null) continue;
+                      JSONArray content = item.optJSONArray("content");
+                      if (content == null) continue;
+                      for (int j = 0; j < content.length(); j++) {
+                          JSONObject part = content.optJSONObject(j);
+                          if (part != null && "output_text".equals(part.optString("type"))) {
+                              outputText = part.optString("text", null);
+                              if (outputText != null) break;
+                          }
+                      }
+                  }
+
+                  if (outputText == null || outputText.trim().isEmpty()) {
+                      throw new Exception("A resposta não trouxe texto utilizável.");
+                  }
+
+                  String clean = outputText.trim();
+                  try {
+                      return new JSONObject(clean);
+                  } catch (JSONException e) {
+                      JSONObject fallback = new JSONObject();
+                      fallback.put("raw", outputText);
+                      return fallback;
+                  }
+              }
+
+              private void renderResult(String contact, JSONObject data) {
+                  if (data.has("raw")) {
+                      resultsBox.addView(sectionTitle("RESPOSTA BRUTA"));
+                      TextView raw = text(data.optString("raw"), 15, TEXT, false);
+                      raw.setPadding(dp(14), dp(14), dp(14), dp(14));
+                      raw.setBackground(rounded(CARD, 18));
+                      resultsBox.addView(raw);
+                      return;
+                  }
+
+                  JSONObject analysis = data.optJSONObject("analysis");
+                  if (analysis == null) analysis = new JSONObject();
+
+                  resultsBox.addView(sectionTitle("LEITURA DA CONVERSA"));
+
+                  LinearLayout metrics = card();
+                  metrics.addView(metricLine("Interesse", analysis.optInt("interest", 0)));
+                  metrics.addView(metricLine("Reciprocidade", analysis.optInt("reciprocity", 0)));
+                  metrics.addView(metricLine("Flerte", analysis.optInt("flirt", 0)));
+                  metrics.addView(metricLine("Intimidade", analysis.optInt("intimacy", 0)));
+                  resultsBox.addView(metrics);
+
+                  addInfoCard("Momento", analysis.optString("stage", "—"));
+                  addInfoCard("Leitura", analysis.optString("reading", "—"));
+                  addInfoCard("Próximo movimento", analysis.optString("recommended_move", "—"));
+
+                  String uncertainty = analysis.optString("uncertainty", "").trim();
+                  if (!uncertainty.isEmpty()) addInfoCard("Incerteza", uncertainty);
+
+                  JSONArray avoid = data.optJSONArray("avoid");
+                  if (avoid != null && avoid.length() > 0) {
+                      StringBuilder sb = new StringBuilder();
+                      for (int i = 0; i < avoid.length(); i++) {
+                          String item = avoid.optString(i, "").trim();
+                          if (!item.isEmpty()) sb.append("• ").append(item).append("\n");
+                      }
+                      addInfoCard("Evitar agora", sb.toString().trim());
+                  }
+
+                  resultsBox.addView(space(10));
+                  resultsBox.addView(sectionTitle("RESPOSTAS"));
+
+                  JSONArray suggestions = data.optJSONArray("suggestions");
+                  if (suggestions != null) {
+                      for (int i = 0; i < suggestions.length(); i++) {
+                          JSONObject suggestion = suggestions.optJSONObject(i);
+                          if (suggestion == null) continue;
+                          addSuggestion(
+                                  suggestion.optString("label", "Sugestão"),
+                                  suggestion.optString("text", ""));
+                      }
+                  }
+
+                  String state = data.optString("state_summary", "").trim();
+                  if (!state.isEmpty()) {
+                      prefs.edit().putString("state_" + normalize(contact), state).apply();
+                  }
+
+                  resultsBox.addView(space(8));
+                  resultsBox.addView(sectionTitle("AJUSTAR MEU ESTILO"));
+
+                  LinearLayout feedback = new LinearLayout(this);
+                  feedback.setOrientation(LinearLayout.HORIZONTAL);
+
+                  Button nhe = smallButton("Muito nhe");
+                  nhe.setOnClickListener(v -> addStyleHint("Evite respostas genéricas ou ensaiadas; prefiro algo mais natural e curto."));
+                  feedback.addView(nhe, new LinearLayout.LayoutParams(0, dp(46), 1f));
+
+                  Button malandro = smallButton("+ malandro");
+                  malandro.setOnClickListener(v -> addStyleHint("Pode usar mais confiança, resenha e provocação leve, sem virar cantada pronta."));
+                  LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+                  mlp.setMargins(dp(7), 0, 0, 0);
+                  feedback.addView(malandro, mlp);
+
+                  Button menos = smallButton("- emocionado");
+                  menos.setOnClickListener(v -> addStyleHint("Evite soar emocionado, carente ou intenso cedo demais; mantenha leveza."));
+                  LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+                  elp.setMargins(dp(7), 0, 0, 0);
+                  feedback.addView(menos, elp);
+
+                  resultsBox.addView(feedback);
+
+                  Button forget = smallButton("Limpar memória desta pessoa");
+                  forget.setOnClickListener(v -> {
+                      prefs.edit().remove("state_" + normalize(contact)).apply();
+                      toast("Memória de " + contact + " limpa.");
+                  });
+                  LinearLayout.LayoutParams forgetLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+                  forgetLp.setMargins(0, dp(8), 0, 0);
+                  resultsBox.addView(forget, forgetLp);
+              }
+
+              private void addStyleHint(String hint) {
+                  String current = prefs.getString("style_hints", "");
+                  if (!current.contains(hint)) {
+                      current = current.isEmpty() ? hint : current + " " + hint;
+                      prefs.edit().putString("style_hints", current).apply();
+                  }
+                  toast("Ajuste salvo para as próximas respostas.");
+              }
+
+              private void renderError(String message) {
+                  resultsBox.addView(sectionTitle("ERRO"));
+                  TextView body = text(
+                          message + "\n\nConfira a chave da API, internet e acesso ao modelo selecionado.",
+                          14, TEXT, false);
+                  body.setPadding(dp(14), dp(14), dp(14), dp(14));
+                  body.setBackground(rounded(CARD, 18));
+                  resultsBox.addView(body);
+              }
+
+              private void addSuggestion(String label, String message) {
+                  LinearLayout box = card();
+
+                  TextView l = text(label, 13, ACCENT_2, true);
+                  box.addView(l);
+
+                  TextView m = text(message, 17, TEXT, false);
+                  m.setTextIsSelectable(true);
+                  m.setPadding(0, dp(8), 0, dp(12));
+                  box.addView(m);
+
+                  Button copy = smallButton("Copiar");
+                  copy.setOnClickListener(v -> {
+                      ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                      clipboard.setPrimaryClip(ClipData.newPlainText("resposta", message));
+                      toast("Copiado.");
+                  });
+                  box.addView(copy, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT);
+                  lp.setMargins(0, 0, 0, dp(10));
+                  resultsBox.addView(box, lp);
+              }
+
+              private void addInfoCard(String title, String value) {
+                  LinearLayout box = card();
+                  box.addView(text(title, 12, ACCENT_2, true));
+                  TextView v = text(value == null || value.trim().isEmpty() ? "—" : value, 15, TEXT, false);
+                  v.setPadding(0, dp(6), 0, 0);
+                  box.addView(v);
+
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT);
+                  lp.setMargins(0, dp(8), 0, 0);
+                  resultsBox.addView(box, lp);
+              }
+
+              private TextView metricLine(String label, int score) {
+                  TextView t = text("", 14, TEXT, false);
+                  int safe = Math.max(0, Math.min(10, score));
+                  String bars = "██████████".substring(0, safe) + "░░░░░░░░░░".substring(0, 10 - safe);
+                  t.setText(String.format(Locale.getDefault(), "%-13s %s  %d/10", label, bars, safe));
+                  t.setTypeface(Typeface.MONOSPACE);
+                  t.setPadding(0, dp(3), 0, dp(3));
+                  return t;
+              }
+
+              private LinearLayout card() {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(dp(14), dp(14), dp(14), dp(14));
+                  box.setBackground(rounded(CARD, 18));
+                  return box;
+              }
+
+              private TextView sectionTitle(String s) {
+                  TextView t = text(s, 12, ACCENT_2, true);
+                  t.setLetterSpacing(0.08f);
+                  t.setPadding(dp(2), dp(8), 0, dp(7));
+                  return t;
+              }
+
+              private EditText input(String hint, int lines) {
+                  EditText e = new EditText(this);
+                  e.setHint(hint);
+                  e.setHintTextColor(Color.rgb(120, 120, 130));
+                  e.setTextColor(TEXT);
+                  e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                  e.setPadding(dp(14), dp(12), dp(14), dp(12));
+                  e.setBackground(rounded(CARD, 16));
+                  e.setSingleLine(lines == 1);
+                  if (lines > 1) {
+                      e.setMinLines(lines);
+                      e.setGravity(Gravity.TOP | Gravity.START);
+                  }
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          lines == 1 ? dp(54) : ViewGroup.LayoutParams.WRAP_CONTENT);
+                  lp.setMargins(0, 0, 0, dp(8));
+                  e.setLayoutParams(lp);
+                  return e;
+              }
+
+              private Spinner spinner(String[] values) {
+                  Spinner s = new Spinner(this);
+                  ArrayAdapter<String> adapter = new ArrayAdapter<String>(
+                          this, android.R.layout.simple_spinner_item, values) {
+                      @Override
+                      public View getView(int position, View convertView, ViewGroup parent) {
+                          TextView v = (TextView) super.getView(position, convertView, parent);
+                          v.setTextColor(TEXT);
+                          v.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                          v.setPadding(dp(14), dp(10), dp(14), dp(10));
+                          return v;
+                      }
+                  };
+                  adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                  s.setAdapter(adapter);
+                  s.setBackground(rounded(CARD_2, 16));
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+                  lp.setMargins(0, 0, 0, dp(8));
+                  s.setLayoutParams(lp);
+                  return s;
+              }
+
+              private Button button(String label) {
+                  Button b = new Button(this);
+                  b.setText(label);
+                  b.setAllCaps(false);
+                  b.setTextColor(TEXT);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  b.setBackground(rounded(CARD_2, 16));
+                  return b;
+              }
+
+              private Button smallButton(String label) {
+                  Button b = button(label);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                  return b;
+              }
+
+              private TextView text(String value, int sp, int color, boolean bold) {
+                  TextView t = new TextView(this);
+                  t.setText(value);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  t.setTextColor(color);
+                  if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+                  return t;
+              }
+
+              private View space(int h) {
+                  View v = new View(this);
+                  v.setLayoutParams(new LinearLayout.LayoutParams(1, dp(h)));
+                  return v;
+              }
+
+              private GradientDrawable rounded(int color, int radiusDp) {
+                  GradientDrawable d = new GradientDrawable();
+                  d.setColor(color);
+                  d.setCornerRadius(dp(radiusDp));
+                  return d;
+              }
+
+              private int dp(int v) {
+                  return (int) TypedValue.applyDimension(
+                          TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+              }
+
+              private void setLoading(boolean loading) {
+                  progress.setVisibility(loading ? View.VISIBLE : View.GONE);
+                  analyzeButton.setEnabled(!loading);
+                  analyzeButton.setText(loading ? "ANALISANDO..." : "ANALISAR E CRIAR RESPOSTAS");
+              }
+
+              private void toast(String message) {
+                  Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+              }
+
+              private String normalize(String s) {
+                  return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_");
+              }
+
+              private byte[] readBytes(Uri uri, int maxBytes) throws Exception {
+                  ContentResolver resolver = getContentResolver();
+                  try (InputStream in = resolver.openInputStream(uri);
+                       ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                      if (in == null) throw new Exception("Não consegui abrir a imagem.");
+                      byte[] buffer = new byte[8192];
+                      int total = 0;
+                      int n;
+                      while ((n = in.read(buffer)) != -1) {
+                          total += n;
+                          if (total > maxBytes) {
+                              throw new Exception("Imagem muito grande. Use um print com menos de 14 MB.");
+                          }
+                          out.write(buffer, 0, n);
+                      }
+                      return out.toByteArray();
+                  }
+              }
+
+              private String readStream(InputStream in) throws Exception {
+                  if (in == null) return "";
+                  try (InputStream input = in;
+                       ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                      byte[] buffer = new byte[8192];
+                      int n;
+                      while ((n = input.read(buffer)) != -1) out.write(buffer, 0, n);
+                      return out.toString(StandardCharsets.UTF_8.name());
+                  }
+              }
+          }
+          EOF
+
+          cat > negodoce/README.md <<'EOF'
+          # Nego Doce v0.1
+
+          Protótipo Android de um copiloto multimodal para conversas e flerte.
+
+          - recebe texto ou imagem (print, story, foto, perfil);
+          - recebe imagem ou texto pelo menu Compartilhar do Android;
+          - estima interesse, reciprocidade, flerte e intimidade;
+          - sugere próximo movimento;
+          - gera três respostas: Natural, Nego Doce e Mais ousada;
+          - mantém resumo de estado por contato localmente;
+          - aprende pequenos ajustes de estilo;
+          - não salva a chave da API;
+          - usa store=false nas chamadas.
+          EOF
+
+      - name: Build APK
+        working-directory: negodoce
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Package files
+        run: |
+          cp negodoce/app/build/outputs/apk/debug/app-debug.apk NegoDoce-v0.1-debug.apk
+          cd negodoce
+          zip -qr ../NegoDoce-v0.1-source.zip . -x "app/build/*" ".gradle/*" "build/*"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NegoDoce-v0.1
+          path: |
+            NegoDoce-v0.1-debug.apk
+            NegoDoce-v0.1-source.zip
+          if-no-files-found: error
+          retention-days: 7
